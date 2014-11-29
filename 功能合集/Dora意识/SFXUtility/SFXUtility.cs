@@ -47,7 +47,6 @@ namespace SFXUtility
                 infoMenu.AddItem(new MenuItem("InfoVersion", string.Format("版本: {0}", Version)));
                 infoMenu.AddItem(new MenuItem("InfoIRC", "作者∶ Doramio"));
 				infoMenu.AddItem(new MenuItem("qun", "交流群：96254070"));
-                })));
 
                 miscMenu.AddSubMenu(infoMenu);
 
