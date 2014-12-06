@@ -53,7 +53,7 @@ namespace Tracker
         {
             Config = menu.AddSubMenu(new Menu("语音防Gank", "Gank Tracker"));
             Config.AddItem(new MenuItem("Enabled", "启用").SetValue(true));
-			Config = menu.AddSubMenu(new Menu("汉化群：96254070", "qun"));
+			Config = menu.AddSubMenu(new Menu("汉化群：386289593", "qun"));
         }
 
         private static void GameOnOnGameUpdate(EventArgs args)
