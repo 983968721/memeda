@@ -21,9 +21,10 @@ namespace Tracker
 
         static void Main(string[] args)
         {
-            Config = new Menu("眼位计时", "Tracker", true);
+            Config = new Menu("并不能看见", "Tracker", true);
             HbTracker.AttachToMenu(Config);
             WardTracker.AttachToMenu(Config);
+            //GankAlerter.AttachToMenu(Config);
             Config.AddToMainMenu();
         }
     }
