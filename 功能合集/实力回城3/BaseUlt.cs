@@ -5,17 +5,15 @@ using System.Linq;
 using LeagueSharp;
 using LeagueSharp.Common;
 using SharpDX;
+using SharpDX.Direct3D9;
 using Collision = LeagueSharp.Common.Collision;
 using Color = System.Drawing.Color;
+using Font = SharpDX.Direct3D9.Font;
 
 namespace BaseUlt3
 {
     /*
-     * HandOfBaron buffname correct???
-     * Phasewalker mastery detected correctly now?
-     * Draw: nice thin transparent progress bar with little champion icons moving on them
      * fixed? use for allies when fixed: champ.Spellbook.GetSpell(SpellSlot.R) = Ready
-     * HPRegenRate, for 5 seconds or for 1?
      * */
 
     class BaseUlt
@@ -39,13 +37,22 @@ namespace BaseUlt3
 
         Vector3 EnemySpawnPos;
 
+        Font Text;
+
+        static float BarX = Drawing.Width * 0.425f;
+        float BarY = Drawing.Height * 0.80f;
+        static int BarWidth = (int)(Drawing.Width - 2 * BarX);
+        int BarHeight = 6;
+        int SeperatorHeight = 5;
+        static float Scale = (float)BarWidth / 8000;
+
         public BaseUlt()
         {
-            (Menu = new Menu("泉水大招3", "BaseUlt3", true)).AddToMainMenu();
-            Menu.AddItem(new MenuItem("showRecalls", "显示回程").SetValue(true));
+            (Menu = new Menu("实力回城3", "BaseUlt3", true)).AddToMainMenu();
+            Menu.AddItem(new MenuItem("showRecalls", "显示回城").SetValue(true));
             Menu.AddItem(new MenuItem("baseUlt", "使用大招").SetValue(true));
-            Menu.AddItem(new MenuItem("panicKey", "（恐慌键位）禁用大招").SetValue(new KeyBind(32, KeyBindType.Press))); //32 == space
-            Menu.AddItem(new MenuItem("regardlessKey", "无时间限制|保持").SetValue(new KeyBind(17, KeyBindType.Press))); //17 == ctrl
+            Menu.AddItem(new MenuItem("panicKey", "禁用大招按键").SetValue(new KeyBind(32, KeyBindType.Press))); //32 == space
+            Menu.AddItem(new MenuItem("regardlessKey", "无时间限制 (保持)").SetValue(new KeyBind(17, KeyBindType.Press))); //17 == ctrl
 
             Heroes = ObjectManager.Get<Obj_AI_Hero>().ToList();
             Enemies = Heroes.Where(x => x.IsEnemy).ToList();
@@ -57,7 +64,7 @@ namespace BaseUlt3
 
             if (compatibleChamp)
             {
-                TeamUlt = Menu.AddSubMenu(new Menu("团队 大招", "TeamUlt"));
+                TeamUlt = Menu.AddSubMenu(new Menu("团队大招", "TeamUlt"));
 
                 foreach (Obj_AI_Hero champ in Allies.Where(x => !x.IsMe && IsCompatibleChamp(x.ChampionName)))
                     TeamUlt.AddItem(new MenuItem(champ.ChampionName, "Ally with baseult: " + champ.ChampionName).SetValue(false).DontSave());
@@ -74,13 +81,19 @@ namespace BaseUlt3
 
             Ultimate = new Spell(SpellSlot.R);
 
+            Text = new Font(Drawing.Direct3DDevice, new FontDescription{FaceName = "Calibri", Height = 13, Width = 6, OutputPrecision = FontPrecision.Default, Quality = FontQuality.Default});
+            
             Game.OnGameProcessPacket += Game_OnGameProcessPacket;
+            Drawing.OnPreReset += Drawing_OnPreReset;
+            Drawing.OnPostReset += Drawing_OnPostReset;
             Drawing.OnDraw += Drawing_OnDraw;
+            AppDomain.CurrentDomain.DomainUnload += CurrentDomain_DomainUnload;
+            AppDomain.CurrentDomain.ProcessExit += CurrentDomain_DomainUnload;
 
             if (compatibleChamp)
                 Game.OnGameUpdate += Game_OnGameUpdate;
 
-            Game.PrintChat("<font color=\"#1eff00\">BaseUlt3 (alpha, not yet for using purposes) by Doramio</font> - <font color=\"#00BFFF\">Loaded</font>");
+            Game.PrintChat("<font color=\"#1eff00\">BaseUlt3 by Doramio</font> - <font color=\"#00BFFF\">Loaded</font>");
         }
 
         public bool IsCompatibleChamp(String championName)
@@ -102,7 +115,7 @@ namespace BaseUlt3
                 x.Player.IsValid &&
                 !x.Player.IsDead &&
                 !DisabledChampions.Item(x.Player.ChampionName).GetValue<bool>() && 
-                x.RecallInfo.Recall.Status == Packet.S2C.Recall.RecallStatus.RecallStarted).OrderBy(x => x.RecallInfo.GetRecallEnd()))
+                x.RecallInfo.Recall.Status == Packet.S2C.Teleport.Status.Start && x.RecallInfo.Recall.Type == Packet.S2C.Teleport.Type.Recall).OrderBy(x => x.RecallInfo.GetRecallCountdown()))
             {
                 if (Environment.TickCount - LastUltCastT > 15000)
                     HandleUltTarget(enemyInfo);
@@ -136,7 +149,8 @@ namespace BaseUlt3
 
         void HandleUltTarget(EnemyInfo enemyInfo)
         {
-            bool shoot = false;
+            bool ultNow = false;
+            bool me = false;
 
             foreach (Obj_AI_Hero champ in Allies.Where(x => //gathering the damage from allies should probably be done once only with timers
                             x.IsValid &&
@@ -155,35 +169,58 @@ namespace BaseUlt3
 
                 if (enemyInfo.RecallInfo.GetRecallCountdown() >= timeneeded)
                     enemyInfo.RecallInfo.IncomingDamage[champ.NetworkId] = (float)Damage.GetSpellDamage(champ, enemyInfo.Player, SpellSlot.R, UltSpellData[champ.ChampionName].SpellStage) * UltSpellData[champ.ChampionName].DamageMultiplicator;
-                else if (enemyInfo.RecallInfo.GetRecallCountdown() < timeneeded)
+                else if (enemyInfo.RecallInfo.GetRecallCountdown() < timeneeded - (champ.IsMe ? 0 : 125)) //some buffer for allies so their damage isnt getting reset
                 {
                     enemyInfo.RecallInfo.IncomingDamage[champ.NetworkId] = 0;
                     continue;
                 }
 
-                if (champ.IsMe && enemyInfo.RecallInfo.GetRecallCountdown() - timeneeded < 65)
-                    shoot = true;
+                if (champ.IsMe)
+                {
+                    me = true;
+
+                    enemyInfo.RecallInfo.EstimatedShootT = timeneeded;
+
+                    if(enemyInfo.RecallInfo.GetRecallCountdown() - timeneeded < 60)
+                        ultNow = true;
+                }
             }
 
-            float totalUltDamage = enemyInfo.RecallInfo.IncomingDamage.Values.Sum();
-
-            float targetHealth = GetTargetHealth(enemyInfo, enemyInfo.RecallInfo.GetRecallCountdown());
-
-            if (!shoot || Menu.Item("panicKey").GetValue<KeyBind>().Active)
-                return;
-
-            int time = Environment.TickCount;
-
-            if (time - enemyInfo.LastSeen > 20000 && !Menu.Item("regardlessKey").GetValue<KeyBind>().Active)
+            if(me)
             {
-                if (totalUltDamage < enemyInfo.Player.MaxHealth)
-                    return;
-            }
-            else if (totalUltDamage < targetHealth)
-                return;
+                float totalUltDamage = enemyInfo.RecallInfo.IncomingDamage.Values.Sum();
 
-            Ultimate.Cast(EnemySpawnPos, true);
-            LastUltCastT = time;
+                float targetHealth = GetTargetHealth(enemyInfo, enemyInfo.RecallInfo.GetRecallCountdown());
+
+                int time = Environment.TickCount;
+
+                if (time - enemyInfo.LastSeen > 20000 && !Menu.Item("regardlessKey").GetValue<KeyBind>().Active)
+                {
+                    if (totalUltDamage < enemyInfo.Player.MaxHealth)
+                    {
+                        enemyInfo.RecallInfo.LockedTarget = false;
+                        return;
+                    }
+                }
+                else if (totalUltDamage < targetHealth)
+                {
+                    enemyInfo.RecallInfo.LockedTarget = false;
+                    return;
+                }
+
+                enemyInfo.RecallInfo.LockedTarget = true;
+
+                if (!ultNow || Menu.Item("panicKey").GetValue<KeyBind>().Active)
+                    return;
+
+                Ultimate.Cast(EnemySpawnPos, true);
+                LastUltCastT = time;
+            }
+            else
+            {
+                enemyInfo.RecallInfo.LockedTarget = false;
+                enemyInfo.RecallInfo.EstimatedShootT = 0;
+            }
         }
 
         float GetTargetHealth(EnemyInfo enemyInfo, int additionalTime)
@@ -237,152 +274,82 @@ namespace BaseUlt3
 
         void Game_OnGameProcessPacket(GamePacketEventArgs args)
         {
-            if (args.PacketData[0] == Packet.S2C.Recall.Header)
+            if (args.PacketData[0] == Packet.S2C.Teleport.Header)
             {
-                var recall = RecallDecode(args.PacketData); //Packet.S2C.Recall.Decoded(args.PacketData)
+                var recall = Packet.S2C.Teleport.Decoded(args.PacketData);
                 EnemyInfo.Find(x => x.Player.NetworkId == recall.UnitNetworkId).RecallInfo.UpdateRecall(recall); 
             }
         }
 
-        public Packet.S2C.Recall.Struct RecallDecode(byte[] data)
+        void Drawing_OnPostReset(EventArgs args)
         {
-            var time = Environment.TickCount - Game.Ping;
+            Text.OnResetDevice();
+        }
 
-            var reader = new BinaryReader(new MemoryStream(data));
-            var recall = new Packet.S2C.Recall.Struct();
+        void Drawing_OnPreReset(EventArgs args)
+        {
+            Text.OnLostDevice();
+        }
 
-            reader.ReadByte(); //PacketId
-            reader.ReadInt32();
-            recall.UnitNetworkId = reader.ReadInt32();
-            reader.ReadBytes(66);
-
-            recall.Status = Packet.S2C.Recall.RecallStatus.Unknown;
-
-            var teleport = false;
-
-            if (BitConverter.ToString(reader.ReadBytes(6)) != "00-00-00-00-00-00")
-            {
-                if (BitConverter.ToString(reader.ReadBytes(3)) != "00-00-00")
-                {
-                    recall.Status = Packet.S2C.Recall.RecallStatus.TeleportStart;
-                    teleport = true;
-                }
-                else
-                    recall.Status = Packet.S2C.Recall.RecallStatus.RecallStarted;
-            }
-
-            reader.Close();
-
-            var champ = ObjectManager.GetUnitByNetworkId<Obj_AI_Hero>(recall.UnitNetworkId);
-
-            if (champ != null)
-            {
-                if (teleport)
-                    recall.Duration = 3500;
-                else //use masteries to detect recall duration, because spelldata is not initialized yet when enemy has not been seen
-                {
-                    if (Map == Utility.Map.MapType.CrystalScar)
-                        recall.Duration = 4500;
-                    else
-                    {
-                        recall.Duration = 8000;
-
-                        if (champ.HasBuff("HandOfBaron", true))
-                            recall.Duration -= 4000;
-                    }
-
-                    if (champ.Masteries.Any(x => x.Page == MasteryPage.Utility && x.Id == 65 && x.Points == 1))
-                        recall.Duration -= Map == Utility.Map.MapType.CrystalScar ? 500 : 1000; //phasewalker mastery
-                }
-
-                if (!RecallT.ContainsKey(recall.UnitNetworkId) || RecallT[recall.UnitNetworkId] == 0)
-                    RecallT[recall.UnitNetworkId] = time;
-                else
-                {
-                    if (time - RecallT[recall.UnitNetworkId] > recall.Duration - 75)
-                        recall.Status = teleport ? Packet.S2C.Recall.RecallStatus.TeleportEnd : Packet.S2C.Recall.RecallStatus.RecallFinished;
-                    else
-                        recall.Status = teleport ? Packet.S2C.Recall.RecallStatus.TeleportAbort : Packet.S2C.Recall.RecallStatus.RecallAborted;
-
-                    RecallT[recall.UnitNetworkId] = 0; //recall aborted or finished, reset status
-                }
-            }
-
-            return recall;
+        void CurrentDomain_DomainUnload(object sender, EventArgs e)
+        {
+            Text.Dispose();
         }
 
         void Drawing_OnDraw(EventArgs args)
         {
-            if (!Menu.Item("showRecalls").GetValue<bool>())
+            if (!Menu.Item("showRecalls").GetValue<bool>() || Drawing.Direct3DDevice == null || Drawing.Direct3DDevice.IsDisposed)
                 return;
 
-            int index = -1;
-
-            float barX = Drawing.Width * 0.425f;
-            float barY = Drawing.Height * 0.81f;
-            int barWidth = (int)(Drawing.Width - 2 * barX);
-            int barHeight = 6;
-            int sideHeight = 4;
-
-            //DrawRect(barX, barY, barWidth, barHeight, 1, System.Drawing.Color.White);
-            //DrawRect(barX, barY - sideHeight, 1, sideHeight * 2 + barHeight, 1, System.Drawing.Color.White);
-            //DrawRect(barX + barWidth, barY - sideHeight, 1, sideHeight * 2 + barHeight, 1, System.Drawing.Color.White);
-
-            //DrawCircle2(new Vector2(barX, barY), 20, 2, 50, System.Drawing.Color.Red);
+            bool drawFrame = false;
+            bool indicated = false;
 
             foreach (EnemyInfo enemyInfo in EnemyInfo.Where(x =>
                 x.Player.IsValid &&
                 x.RecallInfo.IsPorting() &&
                 !x.Player.IsDead && //maybe redundant
-                x.RecallInfo.GetRecallCountdown() > 0).OrderBy(x => x.RecallInfo.GetRecallEnd()))
+                x.RecallInfo.GetRecallCountdown() > 0).OrderBy(x => x.RecallInfo.GetRecallCountdown()))
             {
-                index++;
-                Drawing.DrawText(Drawing.Width * 0.73f, Drawing.Height * 0.88f + (index * 15f), Color.Red, enemyInfo.RecallInfo.ToString());
+                if (!enemyInfo.RecallInfo.LockedTarget)
+                {
+                    DrawRect(BarX, BarY, (int)(Scale * (float)enemyInfo.RecallInfo.GetRecallCountdown()), BarHeight, 1, System.Drawing.Color.FromArgb(100, System.Drawing.Color.White));
+                    DrawRect(BarX + Scale * (float)enemyInfo.RecallInfo.GetRecallCountdown(), BarY - SeperatorHeight, 0, SeperatorHeight + 1, 1, System.Drawing.Color.LightGray);
+
+                    Text.DrawText(null, enemyInfo.Player.ChampionName, (int)BarX + (int)(Scale * (float)enemyInfo.RecallInfo.GetRecallCountdown() - (float)(enemyInfo.Player.ChampionName.Length * Text.Description.Width) / 2), (int)BarY - SeperatorHeight - Text.Description.Height - 1, new ColorBGRA(255, 255, 255, 255));
+                }
+                else
+                {
+                    if(!indicated && enemyInfo.RecallInfo.EstimatedShootT != 0)
+                    {
+                        indicated = true;
+                        DrawRect(BarX + Scale * enemyInfo.RecallInfo.EstimatedShootT, BarY + SeperatorHeight + BarHeight - 3, 0, SeperatorHeight*2, 2, System.Drawing.Color.Orange);
+                    }
+
+                    DrawRect(BarX, BarY, (int)(Scale * (float)enemyInfo.RecallInfo.GetRecallCountdown()), BarHeight, 1, System.Drawing.Color.FromArgb(255, System.Drawing.Color.Red));
+                    DrawRect(BarX + Scale * (float)enemyInfo.RecallInfo.GetRecallCountdown(), BarY + SeperatorHeight + BarHeight - 3, 0, SeperatorHeight + 1, 1, System.Drawing.Color.IndianRed);
+
+                    Text.DrawText(null, enemyInfo.Player.ChampionName, (int)BarX + (int)(Scale * (float)enemyInfo.RecallInfo.GetRecallCountdown() - (float)(enemyInfo.Player.ChampionName.Length * Text.Description.Width) / 2), (int)BarY + SeperatorHeight + Text.Description.Height / 2, new ColorBGRA(255, 92, 92, 255));
+                }
+
+                if (!drawFrame)
+                    drawFrame = true;
+            }
+
+            if(drawFrame)
+            {
+                DrawRect(BarX, BarY, BarWidth, BarHeight, 1, System.Drawing.Color.FromArgb(40, System.Drawing.Color.White));
+
+                DrawRect(BarX - 1, BarY + 1, 0, BarHeight, 1, System.Drawing.Color.White);
+                DrawRect(BarX - 1, BarY - 1, BarWidth + 2, 1, 1, System.Drawing.Color.White);
+                DrawRect(BarX - 1, BarY + BarHeight, BarWidth + 2, 1, 1, System.Drawing.Color.White);
+                DrawRect(BarX + 1 + BarWidth, BarY + 1, 0, BarHeight, 1, System.Drawing.Color.White);
             }
         }
 
-        public static void DrawRect(float x, float y, int width, int height, float thickness, System.Drawing.Color color)
+        public void DrawRect(float x, float y, int width, int height, float thickness, System.Drawing.Color color)
         {
             for (int i = 0; i < height; i++)
                 Drawing.DrawLine(x, y + i, x + width, y + i, thickness, color);
-        }
-
-        public static void DrawCircle2(Vector2 center, float radius, float thickness, float precision, System.Drawing.Color color) //precision try 0.5f
-        {
-            int vertices = (int)Math.Ceiling(360 * Math.Acos(2 * Math.Pow(1 - precision / radius, 2) - 1)); //360 * Math.Acos OR 2 * Math.PI * RadianToDegree(Math.Acos(x))
-
-            DrawPolygon(center, vertices, radius, thickness, color);
-        }
-
-        public static void DrawPolygon(Vector2 center, int vertices, float radius, float thickness, System.Drawing.Color color)
-        {
-            Vector2[] points = new Vector2[vertices];
-
-            double angle = 2 * Math.PI / vertices;
-
-            for (int i = 0; i < vertices; i++)
-            {
-                double x = center.X + radius * Math.Cos(i * angle);
-                double y = center.Y + radius * Math.Sin(i * angle);
-                points[i] = new Vector2((float)x, (float)y);
-            }
-
-            DrawPolygon(points, thickness, color);
-        }
-
-        public static void DrawPolygon(Vector2[] points, float thickness, System.Drawing.Color color) //should only be called with screencoords
-        {
-            for (int i = 0; i < points.Length; i++)
-                if (OnScreen(points[i]) || OnScreen(points[(i + 1) % points.Length]))
-                    Drawing.DrawLine(points[i].X, points[i].Y, points[(i + 1) % points.Length].X, points[(i + 1) % points.Length].Y, thickness, color); //% to set index to 0 in order to connect last point with first point to finish shape 
-        }
-
-        public static bool OnScreen(Vector2 screenpoint)
-        {
-            if (screenpoint.X >= 0 && screenpoint.Y >= 0 && screenpoint.X <= Drawing.Width && screenpoint.Y <= Drawing.Height)
-                return true;
-
-            return false;
         }
     }
 
@@ -404,49 +371,35 @@ namespace BaseUlt3
     {
         public EnemyInfo EnemyInfo;
         public Dictionary<int, float> IncomingDamage; //from, damage
-        public Packet.S2C.Recall.Struct Recall;
+        public Packet.S2C.Teleport.Struct Recall;
+        public bool LockedTarget;
+        public float EstimatedShootT;
 
         public RecallInfo(EnemyInfo enemyInfo)
         {
             EnemyInfo = enemyInfo;
-            Recall = new Packet.S2C.Recall.Struct(EnemyInfo.Player.NetworkId, Packet.S2C.Recall.RecallStatus.Unknown, Packet.S2C.Recall.ObjectType.Player, 0);
+            Recall = new Packet.S2C.Teleport.Struct(EnemyInfo.Player.NetworkId, Packet.S2C.Teleport.Status.Unknown, Packet.S2C.Teleport.Type.Unknown, 0);
             IncomingDamage = new Dictionary<int, float>(); 
         }
 
         public bool IsPorting()
         {
-            return Recall.Status == Packet.S2C.Recall.RecallStatus.RecallStarted || Recall.Status == Packet.S2C.Recall.RecallStatus.TeleportStart;
+            return Recall.Status == Packet.S2C.Teleport.Status.Start;
         }
 
-        public EnemyInfo UpdateRecall(Packet.S2C.Recall.Struct newRecall)
+        public EnemyInfo UpdateRecall(Packet.S2C.Teleport.Struct newRecall)
         {
             IncomingDamage.Clear();
+            LockedTarget = false;
+            EstimatedShootT = 0;
 
             Recall = newRecall;
             return EnemyInfo;
         }
 
-        public int GetRecallStart()
-        {
-            switch (Recall.Status)
-            {
-                case Packet.S2C.Recall.RecallStatus.RecallStarted:
-                case Packet.S2C.Recall.RecallStatus.TeleportStart:
-                    return Program.BaseUlt.RecallT[Recall.UnitNetworkId];
-
-                default:
-                    return 0;
-            }
-        }
-
-        public int GetRecallEnd()
-        {
-            return GetRecallStart() + Recall.Duration;
-        }
-
         public int GetRecallCountdown()
         {
-            int countdown = GetRecallEnd() - Environment.TickCount;
+            int countdown = Recall.Start + Recall.Duration - Environment.TickCount;
             return countdown < 0 ? 0 : countdown;
         }
 
